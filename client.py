@@ -13,10 +13,14 @@ DATA = Path(__file__).parent / "data"
 DATA.mkdir(exist_ok=True)
 
 
+class CrustError(RuntimeError):
+    pass
+
+
 def headers():
     key = os.getenv("CRUSTDATA_API_KEY")
     if not key:
-        raise SystemExit("No CRUSTDATA_API_KEY found. Create a .env file with it.")
+        raise CrustError("No CRUSTDATA_API_KEY found. Create a .env file with it.")
     return {
         "authorization": f"Bearer {key}",
         "content-type": "application/json",
@@ -34,11 +38,9 @@ def post(path, body):
             wait *= 2
             continue
         if not res.ok:
-            print(f"  Crustdata said {res.status_code}")
-            print(res.text[:1500])
-            raise SystemExit(1)
+            raise CrustError(f"Crustdata said {res.status_code}: {res.text[:800]}")
         return res.json()
-    raise SystemExit("Still rate limited. Wait a minute and run again.")
+    raise CrustError("Still rate limited. Wait a minute and run again.")
 
 
 def records(reply):
@@ -51,10 +53,41 @@ def records(reply):
     return []
 
 
+def paged(path, body, max_items):
+    items, cursor, total = [], None, None
+    while len(items) < max_items:
+        page = dict(body, limit=min(100, max_items - len(items)))
+        if cursor:
+            page["cursor"] = cursor
+        reply = post(path, page)
+        batch = records(reply)
+        total = reply.get("total_count", total)
+        items.extend(batch)
+        cursor = reply.get("next_cursor")
+        if not cursor or not batch:
+            break
+    return items, total
+
+
+def pick(record, *paths):
+    for path in paths:
+        value = record
+        for part in path.split("."):
+            value = value.get(part) if isinstance(value, dict) else None
+        if value not in (None, "", []):
+            return value
+    return None
+
+
 def save(name, payload):
     path = DATA / name
     path.write_text(json.dumps(payload, indent=2, default=str))
-    print(f"  saved {path}")
+    return path
+
+
+def load(name):
+    path = DATA / name
+    return json.loads(path.read_text()) if path.exists() else None
 
 
 def show_shape(item, depth=0, limit=3):
